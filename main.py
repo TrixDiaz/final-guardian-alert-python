@@ -24,41 +24,31 @@ class FaceMotionDetector:
         # Initialize PiCamera2 with error handling
         try:
             print("Initializing camera...")
+            # Try to clean up any existing camera instances
+            try:
+                if self.camera is not None:
+                    self.camera.close()
+            except:
+                pass
+                
             self.camera = Picamera2()
+            time.sleep(2)  # Give the camera time to initialize
             
             # Get camera properties and create a simpler configuration
             camera_properties = self.camera.camera_properties
             print(f"Camera properties: {camera_properties}")
             
-            # Try different configurations in order of preference
-            configs_to_try = [
-                # Configuration 1: Basic RGB888
-                self.camera.create_video_configuration(
-                    main={"size": (640, 480), "format": "RGB888"}
-                ),
-                # Configuration 2: YUV420 format
-                self.camera.create_video_configuration(
-                    main={"size": (640, 480), "format": "YUV420"}
-                ),
-                # Configuration 3: Default configuration
-                self.camera.create_video_configuration()
-            ]
+            # Create a still configuration
+            config = self.camera.create_still_configuration()
+            config["main"]["size"] = (640, 480)
             
-            camera_configured = False
-            for i, config in enumerate(configs_to_try):
-                try:
-                    print(f"Trying configuration {i+1}...")
-                    self.camera.configure(config)
-                    self.camera_config = config
-                    camera_configured = True
-                    print(f"Successfully configured with config {i+1}")
-                    break
-                except Exception as e:
-                    print(f"Configuration {i+1} failed: {e}")
-                    continue
-            
-            if not camera_configured:
-                raise Exception("All camera configurations failed")
+            try:
+                print("Configuring camera...")
+                self.camera.configure(config)
+                print("Camera configuration successful")
+            except Exception as e:
+                print(f"Camera configuration failed: {e}")
+                raise
             
             self.camera.start()
             self.camera_initialized = True
@@ -140,20 +130,8 @@ class FaceMotionDetector:
                 # Capture frame from PiCamera2
                 frame = self.camera.capture_array()
                 
-                # Handle different image formats
-                if len(frame.shape) == 3:
-                    if frame.shape[2] == 3:
-                        # RGB format - convert to BGR for OpenCV
-                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    elif frame.shape[2] == 4:
-                        # RGBA format - convert to BGR
-                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-                    else:
-                        # Other 3-channel format - assume RGB
-                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                else:
-                    # Grayscale or other format - convert to BGR
-                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                # Convert RGB to BGR
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 
                 # Process frame for face detection and motion detection
                 processed_frame = self.detect_faces_and_motion(frame_bgr)

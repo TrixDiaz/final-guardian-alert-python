@@ -17,14 +17,54 @@ DEVICE_MODEL = "RPI3"
 
 class FaceMotionDetector:
     def __init__(self):
-        # Initialize PiCamera2
-        self.camera = Picamera2()
-        self.camera_config = self.camera.create_video_configuration(
-            main={"size": (640, 480), "format": "RGB888"},
-            lores={"size": (320, 240), "format": "YUV420"}
-        )
-        self.camera.configure(self.camera_config)
-        self.camera.start()
+        # Initialize PiCamera2 with error handling
+        try:
+            self.camera = Picamera2()
+            
+            # Get camera properties and create a simpler configuration
+            camera_properties = self.camera.camera_properties
+            print(f"Camera properties: {camera_properties}")
+            
+            # Try different configurations in order of preference
+            configs_to_try = [
+                # Configuration 1: Basic RGB888
+                self.camera.create_video_configuration(
+                    main={"size": (640, 480), "format": "RGB888"}
+                ),
+                # Configuration 2: YUV420 format
+                self.camera.create_video_configuration(
+                    main={"size": (640, 480), "format": "YUV420"}
+                ),
+                # Configuration 3: Default configuration
+                self.camera.create_video_configuration()
+            ]
+            
+            camera_configured = False
+            for i, config in enumerate(configs_to_try):
+                try:
+                    print(f"Trying configuration {i+1}...")
+                    self.camera.configure(config)
+                    self.camera_config = config
+                    camera_configured = True
+                    print(f"Successfully configured with config {i+1}")
+                    break
+                except Exception as e:
+                    print(f"Configuration {i+1} failed: {e}")
+                    continue
+            
+            if not camera_configured:
+                raise Exception("All camera configurations failed")
+            
+            self.camera.start()
+            print("Camera started successfully")
+            
+        except Exception as e:
+            print(f"Failed to initialize camera: {e}")
+            print("Please check:")
+            print("1. Camera is connected properly")
+            print("2. Camera is enabled in raspi-config")
+            print("3. No other applications are using the camera")
+            raise e
         
         # Load Haar cascade for face detection
         cascade_path = os.path.join("model", "haarcascade_frontalface_default.xml")
@@ -85,8 +125,20 @@ class FaceMotionDetector:
                 # Capture frame from PiCamera2
                 frame = self.camera.capture_array()
                 
-                # Convert RGB to BGR for OpenCV
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                # Handle different image formats
+                if len(frame.shape) == 3:
+                    if frame.shape[2] == 3:
+                        # RGB format - convert to BGR for OpenCV
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    elif frame.shape[2] == 4:
+                        # RGBA format - convert to BGR
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                    else:
+                        # Other 3-channel format - assume RGB
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                else:
+                    # Grayscale or other format - convert to BGR
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                 
                 # Process frame for face detection and motion detection
                 processed_frame = self.detect_faces_and_motion(frame_bgr)

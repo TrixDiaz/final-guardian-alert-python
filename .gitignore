@@ -5,3 +5,5 @@ captures/
 .idea/
 encodings.pickle
 dataset/
+firebase-config.json
+dataset

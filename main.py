@@ -6,18 +6,14 @@ import base64
 import os
 import pickle
 from datetime import datetime
-from flask import Flask, Response, render_template_string, jsonify, request
+from flask import Flask, Response, jsonify
 from database import save_motion_detection, save_face_detection, get_firebase_upload_status
 import face_recognition
 
-# Try to import picamera2, fallback to webcam if not available
-try:
-    from picamera2 import Picamera2
-    PICAMERA_AVAILABLE = True
-except ImportError:
-    PICAMERA_AVAILABLE = False
-    print("Warning: picamera2 not available. This code is designed for Raspberry Pi.")
-    print("For testing on Windows, the camera will not work properly.")
+# This project requires Picamera2 (libcamera) and will not fall back to other
+# camera implementations. If importing Picamera2 fails, the Python import
+# itself will raise an ImportError so the user can install the dependency.
+from picamera2 import Picamera2
 
 # Global device configuration
 DEVICE_SERIAL_NUMBER = "SNABC123"
@@ -32,37 +28,32 @@ class FaceMotionDetector:
         # Initialize PiCamera2 for Raspberry Pi 5 with Camera Module 3
         print("Initializing Raspberry Pi 5 Camera Module 3...")
         
-        if not PICAMERA_AVAILABLE:
-            print("✗ PiCamera2 not available. This application requires Raspberry Pi with Camera Module 3.")
-            print("Please install: sudo apt update && sudo apt install python3-picamera2")
+        try:
+            # Initialize PiCamera2 with optimized settings for RPi 5 and Camera Module 3
+            self.camera = Picamera2()
+            
+            # Create configuration optimized for RPi 5 and Camera Module 3
+            self.camera_config = self.camera.create_video_configuration(
+                main={"size": (640, 480), "format": "RGB888"},
+                lores={"size": (320, 240), "format": "YUV420"}
+            )
+            
+            # Configure and start camera
+            self.camera.configure(self.camera_config)
+            self.camera.start()
+            self.camera_initialized = True
+            print("✓ Raspberry Pi 5 Camera Module 3 initialized successfully!")
+            
+        except Exception as e:
+            print(f"✗ Failed to initialize Raspberry Pi 5 Camera Module 3: {e}")
+            print("Please check:")
+            print("1. Camera Module 3 is connected properly to the camera connector")
+            print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
+            print("3. No other applications are using the camera")
+            print("4. You're running on a Raspberry Pi 5")
+            print("5. libcamera is installed: sudo apt install libcamera-tools")
+            print("6. Camera Module 3 is compatible with RPi 5")
             self.camera_initialized = False
-        else:
-            try:
-                # Initialize PiCamera2 with optimized settings for RPi 5 and Camera Module 3
-                self.camera = Picamera2()
-                
-                # Create configuration optimized for RPi 5 and Camera Module 3
-                self.camera_config = self.camera.create_video_configuration(
-                    main={"size": (640, 480), "format": "RGB888"},
-                    lores={"size": (320, 240), "format": "YUV420"}
-                )
-                
-                # Configure and start camera
-                self.camera.configure(self.camera_config)
-                self.camera.start()
-                self.camera_initialized = True
-                print("✓ Raspberry Pi 5 Camera Module 3 initialized successfully!")
-                
-            except Exception as e:
-                print(f"✗ Failed to initialize Raspberry Pi 5 Camera Module 3: {e}")
-                print("Please check:")
-                print("1. Camera Module 3 is connected properly to the camera connector")
-                print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
-                print("3. No other applications are using the camera")
-                print("4. You're running on a Raspberry Pi 5")
-                print("5. libcamera is installed: sudo apt install libcamera-tools")
-                print("6. Camera Module 3 is compatible with RPi 5")
-                self.camera_initialized = False
         
         # Load Haar cascade for face detection
         cascade_path = os.path.join("model", "haarcascade_frontalface_default.xml")
@@ -94,15 +85,6 @@ class FaceMotionDetector:
         if not os.path.exists(self.captures_dir):
             os.makedirs(self.captures_dir)
         
-        # Note: Backend uploads directory is on the server, not local
-        # We'll save locally and the backend will handle serving
-        self.backend_captures_dir = "uploads/captures"
-        if not os.path.exists(self.backend_captures_dir):
-            os.makedirs(self.backend_captures_dir, exist_ok=True)
-            print(f"Created local backend directory: {self.backend_captures_dir}")
-        else:
-            print(f"Backend directory already exists: {self.backend_captures_dir}")
-        
         # Face recognition variables
         self.known_encodings = []
         self.known_names = []
@@ -115,7 +97,6 @@ class FaceMotionDetector:
         self.processing_thread = threading.Thread(target=self.process_frames)
         self.processing_thread.daemon = True
         self.processing_thread.start()
-    
     
     def process_frames(self):
         """Main processing loop for face detection and motion detection"""
@@ -157,8 +138,6 @@ class FaceMotionDetector:
             minNeighbors=5, 
             minSize=(30, 30)
         )
-        
-        # No face drawing here - face recognition will handle the drawing
         
         # Motion detection with high sensitivity
         motion_mask = self.background_subtractor.apply(frame)
@@ -233,26 +212,6 @@ class FaceMotionDetector:
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         
         return frame
-    
-    def adjust_sensitivity(self, sensitivity_level):
-        """Adjust motion detection sensitivity
-        Args:
-            sensitivity_level: 'low', 'medium', 'high', 'ultra'
-        """
-        if sensitivity_level == 'low':
-            self.motion_sensitivity = 50
-            self.min_motion_area = 500
-        elif sensitivity_level == 'medium':
-            self.motion_sensitivity = 30
-            self.min_motion_area = 300
-        elif sensitivity_level == 'high':
-            self.motion_sensitivity = 20
-            self.min_motion_area = 200
-        elif sensitivity_level == 'ultra':
-            self.motion_sensitivity = 10
-            self.min_motion_area = 100
-        else:
-            print(f"Invalid sensitivity level: {sensitivity_level}")
     
     def capture_motion_photo(self, frame, motion_area):
         """Capture photo when motion is detected and save to database"""
@@ -432,12 +391,9 @@ class FaceMotionDetector:
 
 # Initialize detector
 detector = FaceMotionDetector()
-# Set initial sensitivity to low for less sensitive motion detection
-detector.adjust_sensitivity('low')
 
 # Flask app
 app = Flask(__name__)
-
 
 @app.route('/video_feed')
 def video_feed():
@@ -452,286 +408,6 @@ def video_feed():
     
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-
-@app.route('/motion_detection', methods=['POST'])
-def motion_detection_endpoint():
-    """Manual motion detection endpoint"""
-    try:
-        # Get current frame
-        frame = detector.get_frame()
-        if frame is None:
-            return jsonify({"error": "No frame available"}), 400
-        
-        # Decode frame for processing
-        nparr = np.frombuffer(frame, np.uint8)
-        frame_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        # Simulate motion detection (you can modify this logic)
-        motion_area = 1500  # Simulated motion area
-        confidence = 85.5   # Simulated confidence
-        
-        # Capture photo
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"manual_motion_{timestamp}.jpg"
-        
-        # Save to both local and backend directories
-        local_filepath = os.path.join(detector.captures_dir, filename)
-        backend_filepath = os.path.join(detector.backend_captures_dir, filename)
-        cv2.imwrite(local_filepath, frame_cv)
-        cv2.imwrite(backend_filepath, frame_cv)
-        
-        # Prepare motion data
-        motion_data = {
-            "motion_area": str(motion_area),
-            "timestamp": timestamp,
-            "sensitivity": detector.motion_sensitivity,
-            "min_area": detector.min_motion_area,
-            "manual_trigger": True
-        }
-        
-        # Save to database with backend-compatible path
-        result = save_motion_detection(
-            motion_data=str(motion_data),
-            confidence=str(confidence),
-            captured_photo_path=f"captures/{filename}",  # Backend-compatible path
-            device_serial=DEVICE_SERIAL_NUMBER,
-            device_model=DEVICE_MODEL
-        )
-        
-        if result:
-            return jsonify({
-                "success": True,
-                "message": "Motion detection saved successfully",
-                "filename": filename,
-                "motion_area": motion_area,
-                "confidence": confidence,
-                "timestamp": timestamp
-            })
-        else:
-            return jsonify({"error": "Failed to save to database"}), 500
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/motion_status')
-def motion_status():
-    """Get current motion detection status"""
-    return jsonify({
-        "motion_detected": detector.motion_detected,
-        "sensitivity": detector.motion_sensitivity,
-        "min_motion_area": detector.min_motion_area,
-        "last_motion_time": detector.last_motion_time,
-        "motion_cooldown": detector.motion_cooldown
-    })
-
-
-@app.route('/dataset/sync', methods=['POST'])
-def sync_dataset():
-    """Trigger dataset sync from backend"""
-    try:
-        import subprocess
-        result = subprocess.run(['python', 'sync_dataset.py'], 
-                              capture_output=True, text=True, timeout=300)
-        
-        if result.returncode == 0:
-            # Reload face encodings after sync
-            detector.load_face_encodings()
-            return jsonify({
-                "success": True,
-                "message": "Dataset sync completed successfully",
-                "output": result.stdout
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "message": "Dataset sync failed",
-                "error": result.stderr
-            }), 500
-            
-    except subprocess.TimeoutExpired:
-        return jsonify({
-            "success": False,
-            "message": "Dataset sync timed out"
-        }), 500
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": f"Error during dataset sync: {str(e)}"
-        }), 500
-
-
-@app.route('/face_recognition/status')
-def face_recognition_status():
-    """Get face recognition status"""
-    return jsonify({
-        "enabled": detector.face_recognition_enabled,
-        "known_encodings_count": len(detector.known_encodings),
-        "known_users_count": len(set(detector.known_names)),
-        "encodings_file_exists": os.path.exists("encodings.pickle"),
-        "face_detection_cooldown": detector.face_detection_cooldown,
-        "last_face_detection_time": detector.last_face_detection_time
-    })
-
-
-@app.route('/face_recognition/reload', methods=['POST'])
-def reload_face_encodings():
-    """Reload face encodings from pickle file"""
-    try:
-        success = detector.load_face_encodings()
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "Face encodings reloaded successfully",
-                "encodings_count": len(detector.known_encodings),
-                "users_count": len(set(detector.known_names))
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "message": "Failed to reload face encodings"
-            }), 500
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": f"Error reloading face encodings: {str(e)}"
-        }), 500
-
-
-@app.route('/camera/status')
-def camera_status():
-    """Get camera status and diagnostic information"""
-    try:
-        status = {
-            "camera_initialized": detector.camera_initialized,
-            "camera_object_exists": detector.camera is not None,
-            "current_frame_available": detector.current_frame is not None,
-            "picamera2_available": PICAMERA_AVAILABLE
-        }
-        
-        if detector.camera is not None:
-            try:
-                # Try to get camera properties
-                properties = detector.camera.camera_properties
-                status["camera_properties"] = properties
-                status["camera_working"] = True
-            except Exception as e:
-                status["camera_working"] = False
-                status["camera_error"] = str(e)
-        else:
-            status["camera_working"] = False
-            status["camera_error"] = "Camera object is None"
-        
-        return jsonify(status)
-    except Exception as e:
-        return jsonify({
-            "error": f"Error getting camera status: {str(e)}"
-        }), 500
-
-
-@app.route('/camera/reinitialize', methods=['POST'])
-def reinitialize_camera():
-    """Manually reinitialize camera"""
-    try:
-        print("Manual camera reinitialization requested...")
-        
-        # Stop and close existing camera
-        if detector.camera is not None:
-            try:
-                detector.camera.stop()
-                detector.camera.close()
-            except:
-                pass
-            detector.camera = None
-        
-        # Reinitialize camera
-        try:
-            detector.camera = Picamera2()
-            detector.camera_config = detector.camera.create_video_configuration(
-                main={"size": (640, 480), "format": "RGB888"},
-                lores={"size": (320, 240), "format": "YUV420"}
-            )
-            detector.camera.configure(detector.camera_config)
-            detector.camera.start()
-            detector.camera_initialized = True
-            print("✓ Camera reinitialized successfully!")
-            
-            return jsonify({
-                "success": True,
-                "message": "Camera reinitialized successfully"
-            })
-        except Exception as e:
-            detector.camera_initialized = False
-            return jsonify({
-                "success": False,
-                "message": f"Failed to reinitialize camera: {str(e)}"
-            }), 500
-            
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": f"Error reinitializing camera: {str(e)}"
-        }), 500
-
-
-@app.route('/firebase/status')
-def firebase_status():
-    """Get Firebase upload status and delay information"""
-    try:
-        status = get_firebase_upload_status()
-        return jsonify({
-            "success": True,
-            "firebase_status": status
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": f"Error getting Firebase status: {str(e)}"
-        }), 500
-
-
-@app.route('/detection/status')
-def detection_status():
-    """Get comprehensive detection status including motion, face, and Firebase delays"""
-    try:
-        current_time = time.time()
-        
-        # Motion detection status
-        motion_cooldown_passed = current_time - detector.last_motion_time > detector.motion_cooldown
-        motion_remaining = max(0, detector.motion_cooldown - (current_time - detector.last_motion_time))
-        
-        # Face detection status
-        face_cooldown_passed = current_time - detector.last_face_detection_time > detector.face_detection_cooldown
-        face_remaining = max(0, detector.face_detection_cooldown - (current_time - detector.last_face_detection_time))
-        
-        # Firebase status
-        firebase_status = get_firebase_upload_status()
-        
-        return jsonify({
-            "success": True,
-            "motion_detection": {
-                "cooldown_passed": motion_cooldown_passed,
-                "remaining_seconds": motion_remaining,
-                "last_detection_time": detector.last_motion_time,
-                "cooldown_seconds": detector.motion_cooldown
-            },
-            "face_detection": {
-                "cooldown_passed": face_cooldown_passed,
-                "remaining_seconds": face_remaining,
-                "last_detection_time": detector.last_face_detection_time,
-                "cooldown_seconds": detector.face_detection_cooldown
-            },
-            "firebase_upload": firebase_status,
-            "can_detect_motion": motion_cooldown_passed and firebase_status['can_upload_now'],
-            "can_detect_faces": face_cooldown_passed and firebase_status['can_upload_now']
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": f"Error getting detection status: {str(e)}"
-        }), 500
-
-
 if __name__ == '__main__':
     print("Starting Face Detection & Motion Sensor Application for Raspberry Pi 5...")
     print("Features:")
@@ -742,20 +418,9 @@ if __name__ == '__main__':
     print("- Automatic photo capture and database storage on motion detection")
     print("- Automatic face recognition and database storage")
     print("- Flask web server for camera streaming")
-    print("- Adjustable motion sensitivity levels")
-    print("- Dataset sync and face encoding management")
     print("- 30-second Firebase upload delay to prevent spam")
     print("\nAccess URLs:")
     print("- Video stream: http://[PI_IP]:5000/video_feed")
-    print("- Motion detection endpoint: POST http://[PI_IP]:5000/motion_detection")
-    print("- Motion status: GET http://[PI_IP]:5000/motion_status")
-    print("- Dataset sync: POST http://[PI_IP]:5000/dataset/sync")
-    print("- Face recognition status: GET http://[PI_IP]:5000/face_recognition/status")
-    print("- Reload face encodings: POST http://[PI_IP]:5000/face_recognition/reload")
-    print("- Camera status: GET http://[PI_IP]:5000/camera/status")
-    print("- Reinitialize camera: POST http://[PI_IP]:5000/camera/reinitialize")
-    print("- Firebase status: GET http://[PI_IP]:5000/firebase/status")
-    print("- Detection status: GET http://[PI_IP]:5000/detection/status")
     print(f"- Device Serial: {DEVICE_SERIAL_NUMBER}, Model: {DEVICE_MODEL}")
     print("\nTo sync user dataset, run: python sync_dataset.py")
     
@@ -763,5 +428,6 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
     except KeyboardInterrupt:
         print("\nShutting down...")
-        detector.camera.stop()
-        detector.camera.close()
+        if detector.camera:
+            detector.camera.stop()
+            detector.camera.close()

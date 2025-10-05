@@ -17,8 +17,13 @@ DEVICE_MODEL = "RPI3"
 
 class FaceMotionDetector:
     def __init__(self):
+        # Initialize camera flag
+        self.camera_initialized = False
+        self.camera = None
+        
         # Initialize PiCamera2 with error handling
         try:
+            print("Initializing camera...")
             self.camera = Picamera2()
             
             # Get camera properties and create a simpler configuration
@@ -56,6 +61,7 @@ class FaceMotionDetector:
                 raise Exception("All camera configurations failed")
             
             self.camera.start()
+            self.camera_initialized = True
             print("Camera started successfully")
             
         except Exception as e:
@@ -64,7 +70,10 @@ class FaceMotionDetector:
             print("1. Camera is connected properly")
             print("2. Camera is enabled in raspi-config")
             print("3. No other applications are using the camera")
-            raise e
+            print("4. You're running on a Raspberry Pi")
+            print("5. libcamera is installed: sudo apt install libcamera-tools")
+            self.camera_initialized = False
+            # Don't raise the exception, continue with initialization
         
         # Load Haar cascade for face detection
         cascade_path = os.path.join("model", "haarcascade_frontalface_default.xml")
@@ -122,6 +131,12 @@ class FaceMotionDetector:
         """Main processing loop for face detection and motion detection"""
         while True:
             try:
+                # Check if camera is initialized
+                if not self.camera_initialized or self.camera is None:
+                    print("Camera not initialized, skipping frame processing...")
+                    time.sleep(1)
+                    continue
+                
                 # Capture frame from PiCamera2
                 frame = self.camera.capture_array()
                 
@@ -414,6 +429,14 @@ class FaceMotionDetector:
     
     def get_frame(self):
         """Get current frame for streaming"""
+        if not self.camera_initialized:
+            # Return a placeholder frame when camera is not available
+            placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(placeholder, "Camera Not Available", (50, 240), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            _, buffer = cv2.imencode('.jpg', placeholder)
+            return buffer.tobytes()
+        
         with self.frame_lock:
             if self.current_frame is not None:
                 # Encode frame as JPEG
@@ -614,5 +637,6 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
     except KeyboardInterrupt:
         print("\nShutting down...")
-        detector.camera.stop()
-        detector.camera.close()
+        if detector.camera_initialized and detector.camera is not None:
+            detector.camera.stop()
+            detector.camera.close()

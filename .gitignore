@@ -1,0 +1,7 @@
+venv/
+captures/
+*.pyc
+.DS_Store
+.idea/
+encodings.pickle
+dataset/

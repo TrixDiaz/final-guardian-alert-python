@@ -9,6 +9,7 @@ import json
 import requests
 from urllib.parse import urlparse
 import time
+import base64
 from database import get_users_with_faces
 
 # Dataset configuration
@@ -54,6 +55,26 @@ def create_placeholder_image(save_path, user_name, image_index):
         
     except Exception as e:
         print(f"Error creating placeholder image: {e}")
+        return False
+
+def save_base64_image(base64_data, save_path):
+    """Save a base64 encoded image to file"""
+    try:
+        # Remove data URL prefix if present (e.g., "data:image/jpeg;base64,")
+        if ',' in base64_data:
+            base64_data = base64_data.split(',')[1]
+        
+        # Decode base64 data
+        image_data = base64.b64decode(base64_data)
+        
+        # Save to file
+        with open(save_path, 'wb') as f:
+            f.write(image_data)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error saving base64 image: {e}")
         return False
 
 def download_image(url, save_path, max_retries=2):
@@ -147,35 +168,41 @@ def sync_user_images():
                 os.makedirs(user_dir)
                 print(f"Created directory for user: {user_name}")
             
-            # Download all images for this user
-            for i, image_url in enumerate(images):
+            # Process all images for this user
+            for i, image_data in enumerate(images):
                 # Generate filename
-                parsed_url = urlparse(image_url)
-                filename = os.path.basename(parsed_url.path)
-                if not filename or '.' not in filename:
-                    filename = f"image_{i+1}.jpg"
-                
+                filename = f"image_{i+1}.jpg"
                 save_path = os.path.join(user_dir, filename)
                 
-                # Download image
-                if download_image(image_url, save_path):
-                    successful_downloads += 1
-                    print(f"Downloaded: {user_name}/{filename}")
-                else:
-                    print(f"Failed to download: {user_name}/{filename}")
-                    # Create a placeholder image instead of text file
-                    if create_placeholder_image(save_path, user_name, i):
+                # Check if this is base64 data or a URL
+                if image_data.startswith('data:') or (len(image_data) > 100 and not image_data.startswith('http')):
+                    # This is base64 data
+                    print(f"Saving base64 image: {user_name}/{filename}")
+                    if save_base64_image(image_data, save_path):
                         successful_downloads += 1
-                        print(f"Created placeholder: {user_name}/{filename}")
+                        print(f"Saved base64 image: {user_name}/{filename}")
                     else:
-                        # Fallback to text file if image creation fails
-                        placeholder_path = save_path.replace('.jpg', '_placeholder.txt')
-                        with open(placeholder_path, 'w') as f:
-                            f.write(f"Failed to download: {image_url}")
+                        print(f"Failed to save base64 image: {user_name}/{filename}")
+                        # Create a placeholder image
+                        if create_placeholder_image(save_path, user_name, i):
+                            successful_downloads += 1
+                            print(f"Created placeholder: {user_name}/{filename}")
+                else:
+                    # This is a URL - download it
+                    print(f"Downloading URL image: {user_name}/{filename}")
+                    if download_image(image_data, save_path):
+                        successful_downloads += 1
+                        print(f"Downloaded: {user_name}/{filename}")
+                    else:
+                        print(f"Failed to download: {user_name}/{filename}")
+                        # Create a placeholder image
+                        if create_placeholder_image(save_path, user_name, i):
+                            successful_downloads += 1
+                            print(f"Created placeholder: {user_name}/{filename}")
                 
                 total_images += 1
                 
-                # Small delay to avoid overwhelming the server
+                # Small delay to avoid overwhelming the system
                 time.sleep(0.1)
         
         print(f"\nDataset sync completed!")

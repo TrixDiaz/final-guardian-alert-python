@@ -3,6 +3,8 @@ from firebase_admin import credentials, firestore
 import json
 from datetime import datetime
 import uuid
+import time
+import threading
 
 # Initialize Firebase Admin SDK
 try:
@@ -24,62 +26,140 @@ MOTION_DETECTION_COLLECTION = 'motion_detection'
 FACE_DETECTION_COLLECTION = 'face_detection'
 USERS_COLLECTION = 'users'
 
+# Firebase upload delay tracking
+last_firebase_upload_time = 0
+FIREBASE_UPLOAD_DELAY = 30  # 30 seconds delay between Firebase uploads
+
 def save_motion_detection(motion_data, confidence, captured_photo_path, device_serial="SNABC123", device_model="RPI3"):
-    """Save motion detection data to Firebase Firestore"""
+    """Save motion detection data to Firebase Firestore with 30-second delay"""
+    global last_firebase_upload_time
+    
+    def delayed_upload():
+        """Perform the actual Firebase upload after delay"""
+        try:
+            # Generate unique ID
+            detection_id = str(uuid.uuid4())
+            
+            # Prepare document data
+            doc_data = {
+                'id': detection_id,
+                'motion_data': motion_data,
+                'confidence': confidence,
+                'captured_photo': captured_photo_path,
+                'device_serial_number': device_serial,
+                'device_model': device_model,
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            }
+            
+            # Save to Firestore
+            doc_ref = db.collection(MOTION_DETECTION_COLLECTION).document(detection_id)
+            doc_ref.set(doc_data)
+            
+            print(f"Motion detection saved to Firebase: {detection_id}")
+            return doc_data
+            
+        except Exception as e:
+            print(f"Error saving motion detection to Firebase: {e}")
+            return None
+    
     try:
-        # Generate unique ID
-        detection_id = str(uuid.uuid4())
+        current_time = time.time()
         
-        # Prepare document data
-        doc_data = {
-            'id': detection_id,
-            'motion_data': motion_data,
-            'confidence': confidence,
-            'captured_photo': captured_photo_path,
-            'device_serial_number': device_serial,
-            'device_model': device_model,
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
-        }
-        
-        # Save to Firestore
-        doc_ref = db.collection(MOTION_DETECTION_COLLECTION).document(detection_id)
-        doc_ref.set(doc_data)
-        
-        print(f"Motion detection saved to Firebase: {detection_id}")
-        return doc_data
-        
+        # Check if enough time has passed since last upload
+        if current_time - last_firebase_upload_time >= FIREBASE_UPLOAD_DELAY:
+            # Upload immediately
+            result = delayed_upload()
+            last_firebase_upload_time = current_time
+            return result
+        else:
+            # Calculate remaining delay time
+            remaining_delay = FIREBASE_UPLOAD_DELAY - (current_time - last_firebase_upload_time)
+            print(f"Firebase upload delayed by {remaining_delay:.1f} seconds to respect 30-second cooldown")
+            
+            # Schedule upload in a separate thread after the remaining delay
+            def scheduled_upload():
+                time.sleep(remaining_delay)
+                result = delayed_upload()
+                global last_firebase_upload_time
+                last_firebase_upload_time = time.time()
+                return result
+            
+            # Start the delayed upload in a separate thread
+            upload_thread = threading.Thread(target=scheduled_upload)
+            upload_thread.daemon = True
+            upload_thread.start()
+            
+            return {"status": "scheduled", "delay_seconds": remaining_delay}
+            
     except Exception as e:
-        print(f"Error saving motion detection to Firebase: {e}")
+        print(f"Error in motion detection delay logic: {e}")
         return None
 
 def save_face_detection(face_data, confidence, captured_photo_path, device_serial="SNABC123", device_model="RPI3"):
-    """Save face detection data to Firebase Firestore"""
+    """Save face detection data to Firebase Firestore with 30-second delay"""
+    global last_firebase_upload_time
+    
+    def delayed_upload():
+        """Perform the actual Firebase upload after delay"""
+        try:
+            # Generate unique ID
+            detection_id = str(uuid.uuid4())
+            
+            # Prepare document data
+            doc_data = {
+                'id': detection_id,
+                'face_data': face_data,
+                'confidence': confidence,
+                'captured_photo': captured_photo_path,
+                'device_serial_number': device_serial,
+                'device_model': device_model,
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            }
+            
+            # Save to Firestore
+            doc_ref = db.collection(FACE_DETECTION_COLLECTION).document(detection_id)
+            doc_ref.set(doc_data)
+            
+            print(f"Face detection saved to Firebase: {detection_id}")
+            return doc_data
+            
+        except Exception as e:
+            print(f"Error saving face detection to Firebase: {e}")
+            return None
+    
     try:
-        # Generate unique ID
-        detection_id = str(uuid.uuid4())
+        current_time = time.time()
         
-        # Prepare document data
-        doc_data = {
-            'id': detection_id,
-            'face_data': face_data,
-            'confidence': confidence,
-            'captured_photo': captured_photo_path,
-            'device_serial_number': device_serial,
-            'device_model': device_model,
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
-        }
-        
-        # Save to Firestore
-        doc_ref = db.collection(FACE_DETECTION_COLLECTION).document(detection_id)
-        doc_ref.set(doc_data)
-        
-        print(f"Face detection saved to Firebase: {detection_id}")
-        return doc_data
-        
+        # Check if enough time has passed since last upload
+        if current_time - last_firebase_upload_time >= FIREBASE_UPLOAD_DELAY:
+            # Upload immediately
+            result = delayed_upload()
+            last_firebase_upload_time = current_time
+            return result
+        else:
+            # Calculate remaining delay time
+            remaining_delay = FIREBASE_UPLOAD_DELAY - (current_time - last_firebase_upload_time)
+            print(f"Firebase upload delayed by {remaining_delay:.1f} seconds to respect 30-second cooldown")
+            
+            # Schedule upload in a separate thread after the remaining delay
+            def scheduled_upload():
+                time.sleep(remaining_delay)
+                result = delayed_upload()
+                global last_firebase_upload_time
+                last_firebase_upload_time = time.time()
+                return result
+            
+            # Start the delayed upload in a separate thread
+            upload_thread = threading.Thread(target=scheduled_upload)
+            upload_thread.daemon = True
+            upload_thread.start()
+            
+            return {"status": "scheduled", "delay_seconds": remaining_delay}
+            
     except Exception as e:
-        print(f"Error saving face detection to Firebase: {e}")
+        print(f"Error in face detection delay logic: {e}")
         return None
 
 def get_users_with_faces():
@@ -174,3 +254,19 @@ def get_users_with_faces():
         import traceback
         traceback.print_exc()
         return []
+
+def get_firebase_upload_status():
+    """Get current Firebase upload status and delay information"""
+    global last_firebase_upload_time
+    
+    current_time = time.time()
+    time_since_last_upload = current_time - last_firebase_upload_time
+    remaining_delay = max(0, FIREBASE_UPLOAD_DELAY - time_since_last_upload)
+    
+    return {
+        "last_upload_time": last_firebase_upload_time,
+        "time_since_last_upload": time_since_last_upload,
+        "remaining_delay": remaining_delay,
+        "can_upload_now": remaining_delay <= 0,
+        "upload_delay_seconds": FIREBASE_UPLOAD_DELAY
+    }

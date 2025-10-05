@@ -7,7 +7,7 @@ import os
 import pickle
 from datetime import datetime
 from flask import Flask, Response, render_template_string, jsonify, request
-from database import save_motion_detection, save_face_detection
+from database import save_motion_detection, save_face_detection, get_firebase_upload_status
 import face_recognition
 
 # Try to import picamera2, fallback to webcam if not available
@@ -645,6 +645,22 @@ def reinitialize_camera():
         }), 500
 
 
+@app.route('/firebase/status')
+def firebase_status():
+    """Get Firebase upload status and delay information"""
+    try:
+        status = get_firebase_upload_status()
+        return jsonify({
+            "success": True,
+            "firebase_status": status
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error getting Firebase status: {str(e)}"
+        }), 500
+
+
 if __name__ == '__main__':
     print("Starting Face Detection & Motion Sensor Application...")
     print("Features:")
@@ -665,6 +681,7 @@ if __name__ == '__main__':
     print("- Reload face encodings: POST http://[PI_IP]:5000/face_recognition/reload")
     print("- Camera status: GET http://[PI_IP]:5000/camera/status")
     print("- Reinitialize camera: POST http://[PI_IP]:5000/camera/reinitialize")
+    print("- Firebase status: GET http://[PI_IP]:5000/firebase/status")
     print(f"- Device Serial: {DEVICE_SERIAL_NUMBER}, Model: {DEVICE_MODEL}")
     print("\nTo sync user dataset, run: python sync_dataset.py")
     

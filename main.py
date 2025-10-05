@@ -7,9 +7,17 @@ import os
 import pickle
 from datetime import datetime
 from flask import Flask, Response, render_template_string, jsonify, request
-from picamera2 import Picamera2
 from database import save_motion_detection, save_face_detection
 import face_recognition
+
+# Try to import picamera2, fallback to webcam if not available
+try:
+    from picamera2 import Picamera2
+    PICAMERA_AVAILABLE = True
+except ImportError:
+    PICAMERA_AVAILABLE = False
+    print("Warning: picamera2 not available. This code is designed for Raspberry Pi.")
+    print("For testing on Windows, the camera will not work properly.")
 
 # Global device configuration
 DEVICE_SERIAL_NUMBER = "SNABC123"
@@ -20,50 +28,11 @@ class FaceMotionDetector:
         # Initialize camera flag
         self.camera_initialized = False
         self.camera = None
+        self.camera_retry_count = 0
+        self.max_camera_retries = 5
         
-        # Initialize PiCamera2 with error handling
-        try:
-            print("Initializing camera...")
-            # Try to clean up any existing camera instances
-            try:
-                if self.camera is not None:
-                    self.camera.close()
-            except:
-                pass
-                
-            self.camera = Picamera2()
-            time.sleep(2)  # Give the camera time to initialize
-            
-            # Get camera properties and create a simpler configuration
-            camera_properties = self.camera.camera_properties
-            print(f"Camera properties: {camera_properties}")
-            
-            # Create a still configuration
-            config = self.camera.create_still_configuration()
-            config["main"]["size"] = (640, 480)
-            
-            try:
-                print("Configuring camera...")
-                self.camera.configure(config)
-                print("Camera configuration successful")
-            except Exception as e:
-                print(f"Camera configuration failed: {e}")
-                raise
-            
-            self.camera.start()
-            self.camera_initialized = True
-            print("Camera started successfully")
-            
-        except Exception as e:
-            print(f"Failed to initialize camera: {e}")
-            print("Please check:")
-            print("1. Camera is connected properly")
-            print("2. Camera is enabled in raspi-config")
-            print("3. No other applications are using the camera")
-            print("4. You're running on a Raspberry Pi")
-            print("5. libcamera is installed: sudo apt install libcamera-tools")
-            self.camera_initialized = False
-            # Don't raise the exception, continue with initialization
+        # Initialize camera with retry mechanism
+        self.initialize_camera()
         
         # Load Haar cascade for face detection
         cascade_path = os.path.join("model", "haarcascade_frontalface_default.xml")
@@ -117,13 +86,115 @@ class FaceMotionDetector:
         self.processing_thread.daemon = True
         self.processing_thread.start()
     
+    def initialize_camera(self):
+        """Initialize camera with retry mechanism"""
+        # Check if picamera2 is available
+        if not PICAMERA_AVAILABLE:
+            print("✗ picamera2 not available. This application requires a Raspberry Pi with picamera2 installed.")
+            print("For development/testing on Windows, you can use a webcam by modifying the code.")
+            self.camera_initialized = False
+            return False
+        
+        while self.camera_retry_count < self.max_camera_retries:
+            try:
+                print(f"Initializing camera (attempt {self.camera_retry_count + 1}/{self.max_camera_retries})...")
+                
+                # Try to clean up any existing camera instances
+                if self.camera is not None:
+                    try:
+                        self.camera.stop()
+                        self.camera.close()
+                    except:
+                        pass
+                    self.camera = None
+                
+                # Wait a bit before retrying
+                if self.camera_retry_count > 0:
+                    time.sleep(2)
+                
+                # Create new camera instance
+                self.camera = Picamera2()
+                time.sleep(1)  # Give the camera time to initialize
+                
+                # Get camera properties
+                camera_properties = self.camera.camera_properties
+                print(f"Camera properties: {camera_properties}")
+                
+                # Try different configurations
+                configs_to_try = [
+                    self.camera.create_still_configuration(),
+                    self.camera.create_video_configuration(main={"size": (640, 480)}),
+                    self.camera.create_video_configuration(main={"size": (640, 480), "format": "RGB888"})
+                ]
+                
+                config_success = False
+                for i, config in enumerate(configs_to_try):
+                    try:
+                        print(f"Trying configuration {i+1}...")
+                        self.camera.configure(config)
+                        print(f"Configuration {i+1} successful")
+                        config_success = True
+                        break
+                    except Exception as e:
+                        print(f"Configuration {i+1} failed: {e}")
+                        continue
+                
+                if not config_success:
+                    raise Exception("All camera configurations failed")
+                
+                # Start camera
+                self.camera.start()
+                time.sleep(1)  # Give camera time to start
+                
+                # Test camera by capturing a frame
+                test_frame = self.camera.capture_array()
+                print(f"Test frame captured: shape={test_frame.shape}, dtype={test_frame.dtype}")
+                
+                self.camera_initialized = True
+                self.camera_retry_count = 0  # Reset retry count on success
+                print("✓ Camera initialized successfully!")
+                return True
+                
+            except Exception as e:
+                self.camera_retry_count += 1
+                print(f"✗ Camera initialization failed (attempt {self.camera_retry_count}): {e}")
+                
+                if self.camera_retry_count >= self.max_camera_retries:
+                    print("✗ Maximum camera initialization attempts reached")
+                    print("Please check:")
+                    print("1. Camera is connected properly")
+                    print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
+                    print("3. No other applications are using the camera")
+                    print("4. You're running on a Raspberry Pi")
+                    print("5. libcamera is installed: sudo apt install libcamera-tools")
+                    print("6. Try running: sudo systemctl restart libcamera")
+                    self.camera_initialized = False
+                    return False
+                else:
+                    print(f"Retrying in 3 seconds... (attempt {self.camera_retry_count + 1}/{self.max_camera_retries})")
+                    time.sleep(3)
+        
+        return False
+    
     def process_frames(self):
         """Main processing loop for face detection and motion detection"""
+        last_retry_time = 0
+        retry_interval = 10  # seconds between retry attempts
+        
         while True:
             try:
                 # Check if camera is initialized
                 if not self.camera_initialized or self.camera is None:
-                    print("Camera not initialized, skipping frame processing...")
+                    current_time = time.time()
+                    if current_time - last_retry_time > retry_interval:
+                        print("Camera not initialized, attempting to reinitialize...")
+                        if self.initialize_camera():
+                            print("✓ Camera reinitialized successfully!")
+                        else:
+                            print("✗ Camera reinitialization failed, will retry in 10 seconds...")
+                        last_retry_time = current_time
+                    else:
+                        print("Camera not initialized, skipping frame processing...")
                     time.sleep(1)
                     continue
                 
@@ -145,6 +216,17 @@ class FaceMotionDetector:
                     
             except Exception as e:
                 print(f"Error processing frame: {e}")
+                # If there's an error, try to reinitialize camera
+                if "camera" in str(e).lower() or "capture" in str(e).lower():
+                    print("Camera error detected, attempting to reinitialize...")
+                    self.camera_initialized = False
+                    if self.camera is not None:
+                        try:
+                            self.camera.stop()
+                            self.camera.close()
+                        except:
+                            pass
+                        self.camera = None
                 time.sleep(0.1)
     
     def detect_faces_and_motion(self, frame):
@@ -590,6 +672,63 @@ def reload_face_encodings():
         }), 500
 
 
+@app.route('/camera/status')
+def camera_status():
+    """Get camera status and diagnostic information"""
+    try:
+        status = {
+            "camera_initialized": detector.camera_initialized,
+            "camera_object_exists": detector.camera is not None,
+            "retry_count": detector.camera_retry_count,
+            "max_retries": detector.max_camera_retries,
+            "current_frame_available": detector.current_frame is not None,
+            "picamera2_available": PICAMERA_AVAILABLE
+        }
+        
+        if detector.camera is not None:
+            try:
+                # Try to get camera properties
+                properties = detector.camera.camera_properties
+                status["camera_properties"] = properties
+                status["camera_working"] = True
+            except Exception as e:
+                status["camera_working"] = False
+                status["camera_error"] = str(e)
+        else:
+            status["camera_working"] = False
+            status["camera_error"] = "Camera object is None"
+        
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({
+            "error": f"Error getting camera status: {str(e)}"
+        }), 500
+
+
+@app.route('/camera/reinitialize', methods=['POST'])
+def reinitialize_camera():
+    """Manually reinitialize camera"""
+    try:
+        print("Manual camera reinitialization requested...")
+        success = detector.initialize_camera()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Camera reinitialized successfully"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "Failed to reinitialize camera"
+            }), 500
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": f"Error reinitializing camera: {str(e)}"
+        }), 500
+
+
 if __name__ == '__main__':
     print("Starting Face Detection & Motion Sensor Application...")
     print("Features:")
@@ -608,6 +747,8 @@ if __name__ == '__main__':
     print("- Dataset sync: POST http://[PI_IP]:5000/dataset/sync")
     print("- Face recognition status: GET http://[PI_IP]:5000/face_recognition/status")
     print("- Reload face encodings: POST http://[PI_IP]:5000/face_recognition/reload")
+    print("- Camera status: GET http://[PI_IP]:5000/camera/status")
+    print("- Reinitialize camera: POST http://[PI_IP]:5000/camera/reinitialize")
     print(f"- Device Serial: {DEVICE_SERIAL_NUMBER}, Model: {DEVICE_MODEL}")
     print("\nTo sync user dataset, run: python sync_dataset.py")
     

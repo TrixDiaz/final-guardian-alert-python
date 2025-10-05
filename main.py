@@ -29,27 +29,40 @@ class FaceMotionDetector:
         self.camera_initialized = False
         self.camera = None
         
-        # Initialize PiCamera2 with simple approach (like the working code)
-        try:
-            print("Initializing camera...")
-            self.camera = Picamera2()
-            self.camera_config = self.camera.create_video_configuration(
-                main={"size": (640, 480), "format": "RGB888"},
-                lores={"size": (320, 240), "format": "YUV420"}
-            )
-            self.camera.configure(self.camera_config)
-            self.camera.start()
-            self.camera_initialized = True
-            print("✓ Camera initialized successfully!")
-        except Exception as e:
-            print(f"✗ Failed to initialize camera: {e}")
-            print("Please check:")
-            print("1. Camera is connected properly")
-            print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
-            print("3. No other applications are using the camera")
-            print("4. You're running on a Raspberry Pi")
-            print("5. libcamera is installed: sudo apt install libcamera-tools")
+        # Initialize PiCamera2 for Raspberry Pi 5 with Camera Module 3
+        print("Initializing Raspberry Pi 5 Camera Module 3...")
+        
+        if not PICAMERA_AVAILABLE:
+            print("✗ PiCamera2 not available. This application requires Raspberry Pi with Camera Module 3.")
+            print("Please install: sudo apt update && sudo apt install python3-picamera2")
             self.camera_initialized = False
+        else:
+            try:
+                # Initialize PiCamera2 with optimized settings for RPi 5 and Camera Module 3
+                self.camera = Picamera2()
+                
+                # Create configuration optimized for RPi 5 and Camera Module 3
+                self.camera_config = self.camera.create_video_configuration(
+                    main={"size": (640, 480), "format": "RGB888"},
+                    lores={"size": (320, 240), "format": "YUV420"}
+                )
+                
+                # Configure and start camera
+                self.camera.configure(self.camera_config)
+                self.camera.start()
+                self.camera_initialized = True
+                print("✓ Raspberry Pi 5 Camera Module 3 initialized successfully!")
+                
+            except Exception as e:
+                print(f"✗ Failed to initialize Raspberry Pi 5 Camera Module 3: {e}")
+                print("Please check:")
+                print("1. Camera Module 3 is connected properly to the camera connector")
+                print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
+                print("3. No other applications are using the camera")
+                print("4. You're running on a Raspberry Pi 5")
+                print("5. libcamera is installed: sudo apt install libcamera-tools")
+                print("6. Camera Module 3 is compatible with RPi 5")
+                self.camera_initialized = False
         
         # Load Haar cascade for face detection
         cascade_path = os.path.join("model", "haarcascade_frontalface_default.xml")
@@ -199,10 +212,18 @@ class FaceMotionDetector:
             self.motion_detected = True
             self.motion_timer = current_time
             
-            # Capture photo and save to database if enough time has passed
-            if current_time - self.last_motion_time > self.motion_cooldown:
+            # Check both motion cooldown and Firebase upload status
+            motion_cooldown_passed = current_time - self.last_motion_time > self.motion_cooldown
+            firebase_status = get_firebase_upload_status()
+            firebase_ready = firebase_status['can_upload_now']
+            
+            # Only capture photo if both conditions are met
+            if motion_cooldown_passed and firebase_ready:
                 self.capture_motion_photo(frame, total_motion_area)
                 self.last_motion_time = current_time
+            elif motion_cooldown_passed and not firebase_ready:
+                remaining_firebase_delay = firebase_status['remaining_delay']
+                print(f"Motion detected but Firebase upload delayed by {remaining_firebase_delay:.1f} seconds")
         elif current_time - self.motion_timer > self.motion_display_duration:
             self.motion_detected = False
         
@@ -339,11 +360,19 @@ class FaceMotionDetector:
                 cv2.putText(frame, label, (left + 6, bottom - 6), 
                            cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
                 
-                # Save face detection to database (with cooldown)
+                # Save face detection to database (with cooldown and Firebase delay check)
                 current_time = time.time()
-                if current_time - self.last_face_detection_time > self.face_detection_cooldown:
+                face_cooldown_passed = current_time - self.last_face_detection_time > self.face_detection_cooldown
+                firebase_status = get_firebase_upload_status()
+                firebase_ready = firebase_status['can_upload_now']
+                
+                # Only save face detection if both conditions are met
+                if face_cooldown_passed and firebase_ready:
                     self.save_face_detection(frame, name, confidence, (left, top, right, bottom))
                     self.last_face_detection_time = current_time
+                elif face_cooldown_passed and not firebase_ready:
+                    remaining_firebase_delay = firebase_status['remaining_delay']
+                    print(f"Face detected ({name}) but Firebase upload delayed by {remaining_firebase_delay:.1f} seconds")
             
             return frame
             
@@ -661,9 +690,52 @@ def firebase_status():
         }), 500
 
 
+@app.route('/detection/status')
+def detection_status():
+    """Get comprehensive detection status including motion, face, and Firebase delays"""
+    try:
+        current_time = time.time()
+        
+        # Motion detection status
+        motion_cooldown_passed = current_time - detector.last_motion_time > detector.motion_cooldown
+        motion_remaining = max(0, detector.motion_cooldown - (current_time - detector.last_motion_time))
+        
+        # Face detection status
+        face_cooldown_passed = current_time - detector.last_face_detection_time > detector.face_detection_cooldown
+        face_remaining = max(0, detector.face_detection_cooldown - (current_time - detector.last_face_detection_time))
+        
+        # Firebase status
+        firebase_status = get_firebase_upload_status()
+        
+        return jsonify({
+            "success": True,
+            "motion_detection": {
+                "cooldown_passed": motion_cooldown_passed,
+                "remaining_seconds": motion_remaining,
+                "last_detection_time": detector.last_motion_time,
+                "cooldown_seconds": detector.motion_cooldown
+            },
+            "face_detection": {
+                "cooldown_passed": face_cooldown_passed,
+                "remaining_seconds": face_remaining,
+                "last_detection_time": detector.last_face_detection_time,
+                "cooldown_seconds": detector.face_detection_cooldown
+            },
+            "firebase_upload": firebase_status,
+            "can_detect_motion": motion_cooldown_passed and firebase_status['can_upload_now'],
+            "can_detect_faces": face_cooldown_passed and firebase_status['can_upload_now']
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error getting detection status: {str(e)}"
+        }), 500
+
+
 if __name__ == '__main__':
-    print("Starting Face Detection & Motion Sensor Application...")
+    print("Starting Face Detection & Motion Sensor Application for Raspberry Pi 5...")
     print("Features:")
+    print("- Raspberry Pi 5 with Camera Module 3 support")
     print("- Face detection with green bounding boxes")
     print("- Face recognition with known/unknown user identification")
     print("- High-sensitivity motion detection with red 'Motion' text in upper right")
@@ -672,6 +744,7 @@ if __name__ == '__main__':
     print("- Flask web server for camera streaming")
     print("- Adjustable motion sensitivity levels")
     print("- Dataset sync and face encoding management")
+    print("- 30-second Firebase upload delay to prevent spam")
     print("\nAccess URLs:")
     print("- Video stream: http://[PI_IP]:5000/video_feed")
     print("- Motion detection endpoint: POST http://[PI_IP]:5000/motion_detection")
@@ -682,6 +755,7 @@ if __name__ == '__main__':
     print("- Camera status: GET http://[PI_IP]:5000/camera/status")
     print("- Reinitialize camera: POST http://[PI_IP]:5000/camera/reinitialize")
     print("- Firebase status: GET http://[PI_IP]:5000/firebase/status")
+    print("- Detection status: GET http://[PI_IP]:5000/detection/status")
     print(f"- Device Serial: {DEVICE_SERIAL_NUMBER}, Model: {DEVICE_MODEL}")
     print("\nTo sync user dataset, run: python sync_dataset.py")
     

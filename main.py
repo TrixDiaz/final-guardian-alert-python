@@ -28,11 +28,28 @@ class FaceMotionDetector:
         # Initialize camera flag
         self.camera_initialized = False
         self.camera = None
-        self.camera_retry_count = 0
-        self.max_camera_retries = 5
         
-        # Initialize camera with retry mechanism
-        self.initialize_camera()
+        # Initialize PiCamera2 with simple approach (like the working code)
+        try:
+            print("Initializing camera...")
+            self.camera = Picamera2()
+            self.camera_config = self.camera.create_video_configuration(
+                main={"size": (640, 480), "format": "RGB888"},
+                lores={"size": (320, 240), "format": "YUV420"}
+            )
+            self.camera.configure(self.camera_config)
+            self.camera.start()
+            self.camera_initialized = True
+            print("✓ Camera initialized successfully!")
+        except Exception as e:
+            print(f"✗ Failed to initialize camera: {e}")
+            print("Please check:")
+            print("1. Camera is connected properly")
+            print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
+            print("3. No other applications are using the camera")
+            print("4. You're running on a Raspberry Pi")
+            print("5. libcamera is installed: sudo apt install libcamera-tools")
+            self.camera_initialized = False
         
         # Load Haar cascade for face detection
         cascade_path = os.path.join("model", "haarcascade_frontalface_default.xml")
@@ -86,122 +103,21 @@ class FaceMotionDetector:
         self.processing_thread.daemon = True
         self.processing_thread.start()
     
-    def initialize_camera(self):
-        """Initialize camera with retry mechanism"""
-        # Check if picamera2 is available
-        if not PICAMERA_AVAILABLE:
-            print("✗ picamera2 not available. This application requires a Raspberry Pi with picamera2 installed.")
-            print("For development/testing on Windows, you can use a webcam by modifying the code.")
-            self.camera_initialized = False
-            return False
-        
-        while self.camera_retry_count < self.max_camera_retries:
-            try:
-                print(f"Initializing camera (attempt {self.camera_retry_count + 1}/{self.max_camera_retries})...")
-                
-                # Try to clean up any existing camera instances
-                if self.camera is not None:
-                    try:
-                        self.camera.stop()
-                        self.camera.close()
-                    except:
-                        pass
-                    self.camera = None
-                
-                # Wait a bit before retrying
-                if self.camera_retry_count > 0:
-                    time.sleep(2)
-                
-                # Create new camera instance
-                self.camera = Picamera2()
-                time.sleep(1)  # Give the camera time to initialize
-                
-                # Get camera properties
-                camera_properties = self.camera.camera_properties
-                print(f"Camera properties: {camera_properties}")
-                
-                # Try different configurations
-                configs_to_try = [
-                    self.camera.create_still_configuration(),
-                    self.camera.create_video_configuration(main={"size": (640, 480)}),
-                    self.camera.create_video_configuration(main={"size": (640, 480), "format": "RGB888"})
-                ]
-                
-                config_success = False
-                for i, config in enumerate(configs_to_try):
-                    try:
-                        print(f"Trying configuration {i+1}...")
-                        self.camera.configure(config)
-                        print(f"Configuration {i+1} successful")
-                        config_success = True
-                        break
-                    except Exception as e:
-                        print(f"Configuration {i+1} failed: {e}")
-                        continue
-                
-                if not config_success:
-                    raise Exception("All camera configurations failed")
-                
-                # Start camera
-                self.camera.start()
-                time.sleep(1)  # Give camera time to start
-                
-                # Test camera by capturing a frame
-                test_frame = self.camera.capture_array()
-                print(f"Test frame captured: shape={test_frame.shape}, dtype={test_frame.dtype}")
-                
-                self.camera_initialized = True
-                self.camera_retry_count = 0  # Reset retry count on success
-                print("✓ Camera initialized successfully!")
-                return True
-                
-            except Exception as e:
-                self.camera_retry_count += 1
-                print(f"✗ Camera initialization failed (attempt {self.camera_retry_count}): {e}")
-                
-                if self.camera_retry_count >= self.max_camera_retries:
-                    print("✗ Maximum camera initialization attempts reached")
-                    print("Please check:")
-                    print("1. Camera is connected properly")
-                    print("2. Camera is enabled: sudo raspi-config -> Interface Options -> Camera -> Enable")
-                    print("3. No other applications are using the camera")
-                    print("4. You're running on a Raspberry Pi")
-                    print("5. libcamera is installed: sudo apt install libcamera-tools")
-                    print("6. Try running: sudo systemctl restart libcamera")
-                    self.camera_initialized = False
-                    return False
-                else:
-                    print(f"Retrying in 3 seconds... (attempt {self.camera_retry_count + 1}/{self.max_camera_retries})")
-                    time.sleep(3)
-        
-        return False
     
     def process_frames(self):
         """Main processing loop for face detection and motion detection"""
-        last_retry_time = 0
-        retry_interval = 10  # seconds between retry attempts
-        
         while True:
             try:
                 # Check if camera is initialized
                 if not self.camera_initialized or self.camera is None:
-                    current_time = time.time()
-                    if current_time - last_retry_time > retry_interval:
-                        print("Camera not initialized, attempting to reinitialize...")
-                        if self.initialize_camera():
-                            print("✓ Camera reinitialized successfully!")
-                        else:
-                            print("✗ Camera reinitialization failed, will retry in 10 seconds...")
-                        last_retry_time = current_time
-                    else:
-                        print("Camera not initialized, skipping frame processing...")
+                    print("Camera not initialized, skipping frame processing...")
                     time.sleep(1)
                     continue
                 
                 # Capture frame from PiCamera2
                 frame = self.camera.capture_array()
                 
-                # Convert RGB to BGR
+                # Convert RGB to BGR for OpenCV
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 
                 # Process frame for face detection and motion detection
@@ -216,17 +132,6 @@ class FaceMotionDetector:
                     
             except Exception as e:
                 print(f"Error processing frame: {e}")
-                # If there's an error, try to reinitialize camera
-                if "camera" in str(e).lower() or "capture" in str(e).lower():
-                    print("Camera error detected, attempting to reinitialize...")
-                    self.camera_initialized = False
-                    if self.camera is not None:
-                        try:
-                            self.camera.stop()
-                            self.camera.close()
-                        except:
-                            pass
-                        self.camera = None
                 time.sleep(0.1)
     
     def detect_faces_and_motion(self, frame):
@@ -489,14 +394,6 @@ class FaceMotionDetector:
     
     def get_frame(self):
         """Get current frame for streaming"""
-        if not self.camera_initialized:
-            # Return a placeholder frame when camera is not available
-            placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(placeholder, "Camera Not Available", (50, 240), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            _, buffer = cv2.imencode('.jpg', placeholder)
-            return buffer.tobytes()
-        
         with self.frame_lock:
             if self.current_frame is not None:
                 # Encode frame as JPEG
@@ -679,8 +576,6 @@ def camera_status():
         status = {
             "camera_initialized": detector.camera_initialized,
             "camera_object_exists": detector.camera is not None,
-            "retry_count": detector.camera_retry_count,
-            "max_retries": detector.max_camera_retries,
             "current_frame_available": detector.current_frame is not None,
             "picamera2_available": PICAMERA_AVAILABLE
         }
@@ -710,18 +605,39 @@ def reinitialize_camera():
     """Manually reinitialize camera"""
     try:
         print("Manual camera reinitialization requested...")
-        success = detector.initialize_camera()
         
-        if success:
+        # Stop and close existing camera
+        if detector.camera is not None:
+            try:
+                detector.camera.stop()
+                detector.camera.close()
+            except:
+                pass
+            detector.camera = None
+        
+        # Reinitialize camera
+        try:
+            detector.camera = Picamera2()
+            detector.camera_config = detector.camera.create_video_configuration(
+                main={"size": (640, 480), "format": "RGB888"},
+                lores={"size": (320, 240), "format": "YUV420"}
+            )
+            detector.camera.configure(detector.camera_config)
+            detector.camera.start()
+            detector.camera_initialized = True
+            print("✓ Camera reinitialized successfully!")
+            
             return jsonify({
                 "success": True,
                 "message": "Camera reinitialized successfully"
             })
-        else:
+        except Exception as e:
+            detector.camera_initialized = False
             return jsonify({
                 "success": False,
-                "message": "Failed to reinitialize camera"
+                "message": f"Failed to reinitialize camera: {str(e)}"
             }), 500
+            
     except Exception as e:
         return jsonify({
             "success": False,
@@ -756,6 +672,5 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
     except KeyboardInterrupt:
         print("\nShutting down...")
-        if detector.camera_initialized and detector.camera is not None:
-            detector.camera.stop()
-            detector.camera.close()
+        detector.camera.stop()
+        detector.camera.close()
